@@ -3,9 +3,7 @@ project(mDNS_client)
 
 set(CMAKE_CXX_STANDARD 11)
 
-include_directories("submodules/mdns_cpp")
-
-link_directories("submodules/mdns_cpp")
+add_subdirectory("submodules/mdns_cpp")
 
 set(INC
 )
@@ -15,3 +13,5 @@ set(SRC
 )
 
 add_executable(mDNS_client ${SRC} ${INC})
+
+target_link_libraries(mDNS_client PRIVATE mdns_cpp::mdns_cpp)
