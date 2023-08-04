@@ -24,7 +24,7 @@
 #define IFF_LINK1       0x2000          /* per link layer defined bit */
 #define IFF_LINK2       0x4000          /* per link layer defined bit */
 #define IFF_ALTPHYS     IFF_LINK2       /* use alternate physical connection */
-#define IFF_MULTICAST   0x8000          /* supports multicast */
+#define IFF_MULTICAST   0x1000          /* supports multicast */
 
 static char addrbuffer[64];
 static char entrybuffer[256];
@@ -281,7 +281,7 @@ int
 main(int argc, const char* const* argv) 
 {
 	int mode = 0;
-	const char* service = "raspberrypi.local";
+	const char* service = "Juhans-MacBook-Pro.local";
 	mdns_query_t query[16];
 	size_t query_count = 0;
 
