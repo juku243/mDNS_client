@@ -1,5 +1,7 @@
 #include "mdns.h"
 
+#include <algorithm> // std::min
+
 #include <errno.h>
 #include <sys/types.h>
 #include <ifaddrs.h>
@@ -8,124 +10,120 @@
 
 #include <cstdio> // printf
 
-#define IFF_UP          0x1             /* interface is up */
-#define IFF_BROADCAST   0x2             /* broadcast address valid */
-#define IFF_DEBUG       0x4             /* turn on debugging */
-#define IFF_LOOPBACK    0x8             /* is a loopback net */
-#define IFF_POINTOPOINT 0x10            /* interface is point-to-point link */
-#define IFF_NOTRAILERS  0x20            /* obsolete: avoid use of trailers */
-#define IFF_RUNNING     0x40            /* resources allocated */
-#define IFF_NOARP       0x80            /* no address resolution protocol */
-#define IFF_PROMISC     0x100           /* receive all packets */
-#define IFF_ALLMULTI    0x200           /* receive all multicast packets */
-#define IFF_OACTIVE     0x400           /* transmission in progress */
-#define IFF_SIMPLEX     0x800           /* can't hear own transmissions */
-#define IFF_LINK0       0x1000          /* per link layer defined bit */
-#define IFF_LINK1       0x2000          /* per link layer defined bit */
-#define IFF_LINK2       0x4000          /* per link layer defined bit */
-#define IFF_ALTPHYS     IFF_LINK2       /* use alternate physical connection */
-#define IFF_MULTICAST   0x1000          /* supports multicast */
+constexpr int IFF_UP 			= 0x1;		// interface is up
+constexpr int IFF_LOOPBACK 		= 0x8;      // is a loopback net 
+constexpr int IFF_POINTOPOINT 	= 0x10;     // interface is point-to-point link 
+constexpr int IFF_MULTICAST 	= 0x1000;   // supports multicast
 
-static char addrbuffer[64];
-static char entrybuffer[256];
-static char namebuffer[256];
-static char sendbuffer[1024];
-static mdns_record_txt_t txtbuffer[128];
-
-static struct sockaddr_in service_address_ipv4;
-
-static mdns_string_t ipv4_address_to_string(char* buffer, size_t capacity, const struct sockaddr_in* addr, size_t addrlen) 
+/**
+ * @brief Perform reverse DNS lookup. It looks up the IP address in the struct sockaddr and 
+ * tries to resolve it to a hostname (domain name). Similarly, it attempts to map the port number to a 
+ * service name (e.g., "http", "ssh", "ftp") if available.
+ * 
+ * @param buffer buffer for the result
+ * @param capacity size of the buffer 
+ * @param addr struct that contains IP address
+ * @param addr_len size the addr struct
+ * @return mdns_string_t where .str points to buffer and .length is result len 
+ */
+static mdns_string_t ipv4AddrToString(char* buffer, size_t capacity, const struct sockaddr_in* addr, size_t addr_len) 
 {
 	char host[NI_MAXHOST] = {0};
 	char service[NI_MAXSERV] = {0};
-	int ret = getnameinfo((const struct sockaddr*)addr, (socklen_t)addrlen, host, NI_MAXHOST, service, NI_MAXSERV, NI_NUMERICSERV | NI_NUMERICHOST);
-	int len = 0;
+
+	// The getnameinfo() function is used to perform a reverse DNS lookup. 
+	// It is used to convert an IP address and port number into a corresponding hostname and service name.
+	//
+	// When getnameinfo() is called, it looks up the IP address in the struct sockaddr and 
+	// tries to resolve it to a hostname (domain name). Similarly, it attempts to map the port number to a 
+	// service name (e.g., "http", "ssh", "ftp") if available.
+	//
+	// The function takes the following parameters:
+	// const struct sockaddr *sa: A pointer to a struct sockaddr that contains the IP address and port number you want to resolve.
+	// socklen_t salen: The size of the struct sockaddr.
+	// char *host: A pointer to a buffer where the resulting hostname will be stored.
+	// size_t hostlen: The size of the buffer pointed to by host.
+	// char *serv: A pointer to a buffer where the resulting service name will be stored.
+	// size_t servlen: The size of the buffer pointed to by serv.
+	// int flags: Optional flags that modify the behavior of the function.
+	int ret = getnameinfo((const struct sockaddr*)addr, static_cast<socklen_t>(addr_len), host, NI_MAXHOST, service, NI_MAXSERV, NI_NUMERICSERV | NI_NUMERICHOST);
 	
-  if (ret == 0) 
-  {
+	int len = 0;
+	if (ret == 0) 
+	{
 		if (addr->sin_port != 0)
+		{
 			len = snprintf(buffer, capacity, "%s:%s", host, service);
+		}
 		else
+		{
 			len = snprintf(buffer, capacity, "%s", host);
+		}
 	}
 
-	if (len >= (int)capacity)
-		len = (int)capacity - 1;
-    
+    // Ensure that the resulting string fits within the buffer's capacity.
+    len = std::min(len, static_cast<int>(capacity - 1));
+	
 	mdns_string_t str;
 	str.str = buffer;
 	str.length = len;
+
 	return str;
 }
 
-static mdns_string_t ip_address_to_string(char* buffer, size_t capacity, const struct sockaddr* addr, size_t addrlen) 
+/**
+ * @brief Perform reverse DNS lookup. It looks up the IP address in the struct sockaddr and 
+ * tries to resolve it to a hostname (domain name). Similarly, it attempts to map the port number to a 
+ * service name (e.g., "http", "ssh", "ftp") if available.
+ * 
+ * @param buffer buffer for the result
+ * @param capacity size of the buffer 
+ * @param addr struct that contains IP address
+ * @param addr_len size the addr struct
+ * @return mdns_string_t where .str points to buffer and .length is result len 
+ */
+static mdns_string_t ipAddrToString(char* buffer, size_t capacity, const struct sockaddr* addr, size_t addr_len) 
 {
-	return ipv4_address_to_string(buffer, capacity, (const struct sockaddr_in*)addr, addrlen);
+	return ipv4AddrToString(buffer, capacity, (const struct sockaddr_in*)addr, addr_len);
 }
 
-// Callback handling parsing answers to queries sent
-static int query_callback(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry_type_t entry,
+/**
+ * @brief Callback handling parsing answers to queries sent
+ */
+static int query_callback(int sock, const struct sockaddr* from, size_t addr_len, mdns_entry_type_t entry,
                uint16_t query_id, uint16_t rtype, uint16_t rclass, uint32_t ttl, const void* data,
                size_t size, size_t name_offset, size_t name_length, size_t record_offset,
-               size_t record_length, void* user_data) {
+               size_t record_length, void* user_data) 
+{
 	(void)sizeof(sock);
 	(void)sizeof(query_id);
 	(void)sizeof(name_length);
 	(void)sizeof(user_data);
 
+	char addr_buffer[64];
+	char entry_buffer[256];
+	char name_buffer[256];
+
 	printf("response received");
 
-	mdns_string_t fromaddrstr = ip_address_to_string(addrbuffer, sizeof(addrbuffer), from, addrlen);
+	mdns_string_t from_addr_str = ipAddrToString(addr_buffer, sizeof(addr_buffer), from, addr_len);
 
-	const char* entrytype = (entry == MDNS_ENTRYTYPE_ANSWER) ? "answer" : ((entry == MDNS_ENTRYTYPE_AUTHORITY) ? "authority" : "additional");
+	const char* entry_type = (entry == MDNS_ENTRYTYPE_ANSWER) ? "answer" : ((entry == MDNS_ENTRYTYPE_AUTHORITY) ? "authority" : "additional");
 	
-	mdns_string_t entrystr = mdns_string_extract(data, size, &name_offset, entrybuffer, sizeof(entrybuffer));
+	mdns_string_t entry_str = mdns_string_extract(data, size, &name_offset, entry_buffer, sizeof(entry_buffer));
 	
-	if (rtype == MDNS_RECORDTYPE_PTR) 
-	{
-		mdns_string_t namestr = mdns_record_parse_ptr(data, size, record_offset, record_length,
-		                                              namebuffer, sizeof(namebuffer));
-		printf("%.*s : %s %.*s PTR %.*s rclass 0x%x ttl %u length %d\n",
-		       MDNS_STRING_FORMAT(fromaddrstr), entrytype, MDNS_STRING_FORMAT(entrystr),
-		       MDNS_STRING_FORMAT(namestr), rclass, ttl, (int)record_length);
-	} 
-	else if (rtype == MDNS_RECORDTYPE_SRV) 
-	{
-		mdns_record_srv_t srv = mdns_record_parse_srv(data, size, record_offset, record_length,
-		                                              namebuffer, sizeof(namebuffer));
-		printf("%.*s : %s %.*s SRV %.*s priority %d weight %d port %d\n",
-		       MDNS_STRING_FORMAT(fromaddrstr), entrytype, MDNS_STRING_FORMAT(entrystr),
-		       MDNS_STRING_FORMAT(srv.name), srv.priority, srv.weight, srv.port);
-	} 
-	else if (rtype == MDNS_RECORDTYPE_A) 
+ 	if (rtype == MDNS_RECORDTYPE_A) 
 	{
 		struct sockaddr_in addr;
 		mdns_record_parse_a(data, size, record_offset, record_length, &addr);
-		mdns_string_t addrstr =
-		    ipv4_address_to_string(namebuffer, sizeof(namebuffer), &addr, sizeof(addr));
-		printf("%.*s : %s %.*s A %.*s\n", MDNS_STRING_FORMAT(fromaddrstr), entrytype,
-		       MDNS_STRING_FORMAT(entrystr), MDNS_STRING_FORMAT(addrstr));
-	} 
-	else if (rtype == MDNS_RECORDTYPE_TXT) 
-	{
-		size_t parsed = mdns_record_parse_txt(data, size, record_offset, record_length, txtbuffer,
-		                                      sizeof(txtbuffer) / sizeof(mdns_record_txt_t));
-		for (size_t itxt = 0; itxt < parsed; ++itxt) {
-			if (txtbuffer[itxt].value.length) {
-				printf("%.*s : %s %.*s TXT %.*s = %.*s\n", MDNS_STRING_FORMAT(fromaddrstr),
-				       entrytype, MDNS_STRING_FORMAT(entrystr),
-				       MDNS_STRING_FORMAT(txtbuffer[itxt].key),
-				       MDNS_STRING_FORMAT(txtbuffer[itxt].value));
-			} else {
-				printf("%.*s : %s %.*s TXT %.*s\n", MDNS_STRING_FORMAT(fromaddrstr), entrytype,
-				       MDNS_STRING_FORMAT(entrystr), MDNS_STRING_FORMAT(txtbuffer[itxt].key));
-			}
-		}
+		mdns_string_t addrstr = ipv4AddrToString(name_buffer, sizeof(name_buffer), &addr, sizeof(addr));
+
+		printf("%.*s : %s %.*s A %.*s\n", MDNS_STRING_FORMAT(from_addr_str), entry_type, MDNS_STRING_FORMAT(entry_str), MDNS_STRING_FORMAT(addrstr));
 	} 
 	else 
 	{
 		printf("%.*s : %s %.*s type %u rclass 0x%x ttl %u length %d\n",
-		       MDNS_STRING_FORMAT(fromaddrstr), entrytype, MDNS_STRING_FORMAT(entrystr), rtype,
+		       MDNS_STRING_FORMAT(from_addr_str), entry_type, MDNS_STRING_FORMAT(entry_str), rtype,
 		       rclass, ttl, (int)record_length);
 	}
 	return 0;
@@ -140,6 +138,8 @@ static int open_client_sockets(int* sockets, int max_sockets, int port)
 
 	struct ifaddrs* ifaddr = 0;
 	struct ifaddrs* ifa = 0;
+
+ 	struct sockaddr_in service_address_ipv4;
 
 	if (getifaddrs(&ifaddr) < 0)
 		printf("Unable to get interface addresses\n");
@@ -182,7 +182,7 @@ static int open_client_sockets(int* sockets, int max_sockets, int port)
 				if (log_addr) 
 				{
 					char buffer[128];
-					mdns_string_t addr = ipv4_address_to_string(buffer, sizeof(buffer), saddr,
+					mdns_string_t addr = ipv4AddrToString(buffer, sizeof(buffer), saddr,
 					                                            sizeof(struct sockaddr_in));
 					printf("Local IPv4 address: %.*s\n", MDNS_STRING_FORMAT(addr));
 				}
@@ -217,14 +217,9 @@ static int send_mdns_query(mdns_query_t* query, size_t count)
 	for (size_t iq = 0; iq < count; ++iq) 
 	{
 		const char* record_name = "PTR";
-		if (query[iq].type == MDNS_RECORDTYPE_SRV)
-			record_name = "SRV";
-		else if (query[iq].type == MDNS_RECORDTYPE_A)
+		if (query[iq].type == MDNS_RECORDTYPE_A)
 			record_name = "A";
-		else if (query[iq].type == MDNS_RECORDTYPE_AAAA)
-			record_name = "AAAA";
-		else
-			query[iq].type = MDNS_RECORDTYPE_PTR;
+
 		printf(" : %s %s", query[iq].name, record_name);
 	}
 	printf("\n");
