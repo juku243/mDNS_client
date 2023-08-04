@@ -281,7 +281,7 @@ int
 main(int argc, const char* const* argv) 
 {
 	int mode = 0;
-	const char* service = "Living Room._srpl-tls._tcp.local";
+	const char* service = "raspberrypi.local";
 	mdns_query_t query[16];
 	size_t query_count = 0;
 
@@ -293,7 +293,7 @@ main(int argc, const char* const* argv)
 	mode = 1;
 
 	query[query_count].name = service;
-	query[query_count].type = MDNS_RECORDTYPE_PTR;
+	query[query_count].type = MDNS_RECORDTYPE_A;
 	
 
 	query[query_count].length = strlen(query[query_count].name);
