@@ -1,3 +1,0 @@
-[submodule "submodules/mdns_cpp"]
-	path = submodules/mdns_cpp
-	url = git@github.com:gocarlos/mdns_cpp.git
