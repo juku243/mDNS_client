@@ -130,7 +130,7 @@ static int query_callback(int sock, const struct sockaddr* from, size_t addr_len
 }
 
 // Open sockets for sending one-shot multicast queries from an ephemeral port
-static int open_client_sockets(int* sockets, int max_sockets, int port) 
+static int openSockets(int* sockets, int max_sockets, int port) 
 {
 	// When sending, each socket can only send to one network interface
 	// Thus we need to open one socket for each interface and address family
@@ -142,7 +142,9 @@ static int open_client_sockets(int* sockets, int max_sockets, int port)
  	struct sockaddr_in service_address_ipv4;
 
 	if (getifaddrs(&ifaddr) < 0)
+	{
 		printf("Unable to get interface addresses\n");
+	}
 
 	int first_ipv4 = 1;
 	for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) 
@@ -188,7 +190,7 @@ static int open_client_sockets(int* sockets, int max_sockets, int port)
 				}
 			}
 		} 
-  }
+  	}
 
 	freeifaddrs(ifaddr);
 
@@ -200,7 +202,7 @@ static int send_mdns_query(mdns_query_t* query, size_t count)
 {
 	int sockets[32];
 	int query_id[32];
-	int num_sockets = open_client_sockets(sockets, sizeof(sockets) / sizeof(sockets[0]), 0);
+	int num_sockets = openSockets(sockets, sizeof(sockets) / sizeof(sockets[0]), 0);
 	
 	if (num_sockets <= 0) 
 	{
@@ -272,8 +274,7 @@ static int send_mdns_query(mdns_query_t* query, size_t count)
 	return 0;
 }
 
-int
-main(int argc, const char* const* argv) 
+int main(int argc, const char* const* argv) 
 {
 	int mode = 0;
 	const char* service = "Juhans-MacBook-Pro.local";
