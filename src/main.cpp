@@ -16,13 +16,11 @@ constexpr int IFF_POINTOPOINT 	= 0x10;     // interface is point-to-point link
 constexpr int IFF_MULTICAST 	= 0x1000;   // supports multicast
 
 /**
- * @brief Perform reverse DNS lookup. It looks up the IP address in the struct sockaddr and 
- * tries to resolve it to a hostname (domain name). Similarly, it attempts to map the port number to a 
- * service name (e.g., "http", "ssh", "ftp") if available.
+ * @brief Get IP address (host) and port (service) from the sockaddr_in struct, and return it in format host:port.
  * 
- * @param buffer buffer for the result
+ * @param buffer buffer for the result string that contains host:port
  * @param capacity size of the buffer 
- * @param addr struct that contains IP address
+ * @param addr struct that contains IP address (host) and port (service)
  * @param addr_len size the addr struct
  * @return mdns_string_t where .str points to buffer and .length is result len 
  */
@@ -37,6 +35,10 @@ static mdns_string_t ipv4AddrToString(char* buffer, size_t capacity, const struc
 	// When getnameinfo() is called, it looks up the IP address in the struct sockaddr and 
 	// tries to resolve it to a hostname (domain name). Similarly, it attempts to map the port number to a 
 	// service name (e.g., "http", "ssh", "ftp") if available.
+	//
+	// When you pass the combination of NI_NUMERICSERV and NI_NUMERICHOST flags to the getnameinfo() function, 
+	// it instructs the function to perform a numeric (non-reverse) lookup for both the service (port number) and 
+	// host (IP address) parts of the struct sockaddr provided in the input.
 	//
 	// The function takes the following parameters:
 	// const struct sockaddr *sa: A pointer to a struct sockaddr that contains the IP address and port number you want to resolve.
@@ -90,7 +92,7 @@ static mdns_string_t ipAddrToString(char* buffer, size_t capacity, const struct 
 /**
  * @brief Callback handling parsing answers to queries sent
  */
-static int query_callback(int sock, const struct sockaddr* from, size_t addr_len, mdns_entry_type_t entry,
+static int queryCallback(int sock, const struct sockaddr* from, size_t addr_len, mdns_entry_type_t entry,
                uint16_t query_id, uint16_t rtype, uint16_t rclass, uint32_t ttl, const void* data,
                size_t size, size_t name_offset, size_t name_length, size_t record_offset,
                size_t record_length, void* user_data) 
@@ -98,30 +100,43 @@ static int query_callback(int sock, const struct sockaddr* from, size_t addr_len
 	(void)sizeof(sock);
 	(void)sizeof(query_id);
 	(void)sizeof(name_length);
-	(void)sizeof(user_data);
 
-	char addr_buffer[64];
-	char entry_buffer[256];
-	char name_buffer[256];
+	char addr_buf[64];		// buffer to store host:port string that send the response message
+	char entry_buf[256];	// buffer to store the hostname that was queried
+	char name_buf[256];		// buffer to store the query answer (IP address)
 
-	printf("response received");
+	printf("response received: ");
 
-	mdns_string_t from_addr_str = ipAddrToString(addr_buffer, sizeof(addr_buffer), from, addr_len);
+	// get IP and port of the device that send the response message
+	mdns_string_t from_addr_str = ipAddrToString(addr_buf, sizeof(addr_buf), from, addr_len);
 
+	// get the resource record type 
 	const char* entry_type = (entry == MDNS_ENTRYTYPE_ANSWER) ? "answer" : ((entry == MDNS_ENTRYTYPE_AUTHORITY) ? "authority" : "additional");
 	
-	mdns_string_t entry_str = mdns_string_extract(data, size, &name_offset, entry_buffer, sizeof(entry_buffer));
+	// get the hostname that was queried
+	mdns_string_t entry_str = mdns_string_extract(data, size, &name_offset, entry_buf, sizeof(entry_buf));
 	
- 	if (rtype == MDNS_RECORDTYPE_A) 
+	// if resource record is a answer
+ 	if(rtype == MDNS_RECORDTYPE_A) 
 	{
 		struct sockaddr_in addr;
-		mdns_record_parse_a(data, size, record_offset, record_length, &addr);
-		mdns_string_t addrstr = ipv4AddrToString(name_buffer, sizeof(name_buffer), &addr, sizeof(addr));
 
+		// parse answer resource record and store it to the addr struct
+		mdns_record_parse_a(data, size, record_offset, record_length, &addr);
+
+		// get IP addr (answer) from the addr struct 
+		mdns_string_t addrstr = ipv4AddrToString(name_buf, sizeof(name_buf), &addr, sizeof(addr));
+
+		// store answer to the user_data (buffer), just for the demo purposes
+		char* char_data = (char*)user_data;
+		strcat(char_data, addrstr.str);
+
+		// print response 
 		printf("%.*s : %s %.*s A %.*s\n", MDNS_STRING_FORMAT(from_addr_str), entry_type, MDNS_STRING_FORMAT(entry_str), MDNS_STRING_FORMAT(addrstr));
 	} 
 	else 
 	{
+		// for the other resource records print just details
 		printf("%.*s : %s %.*s type %u rclass 0x%x ttl %u length %d\n",
 		       MDNS_STRING_FORMAT(from_addr_str), entry_type, MDNS_STRING_FORMAT(entry_str), rtype,
 		       rclass, ttl, (int)record_length);
@@ -129,7 +144,16 @@ static int query_callback(int sock, const struct sockaddr* from, size_t addr_len
 	return 0;
 }
 
-// Open sockets for sending one-shot multicast queries from an ephemeral port
+/**
+ * @brief Open socket for the each interface that is open, supports multicast, address is IPv4, is not loopback 
+ * and is not point-to-point interface.
+ * 
+ * @param sockets buffer to store the sockets
+ * @param max_sockets maximum number of sockets that will be opened
+ * @param port that is used by the sockets, if 0 random port will be assigned
+ * 
+ * @return number of sockets opened 
+ */
 static int openSockets(int* sockets, int max_sockets, int port) 
 {
 	// When sending, each socket can only send to one network interface
@@ -141,25 +165,50 @@ static int openSockets(int* sockets, int max_sockets, int port)
 
  	struct sockaddr_in service_address_ipv4;
 
-	if (getifaddrs(&ifaddr) < 0)
+	// The getifaddrs() function is used to retrieve information about the network interfaces 
+	// available on the system. It allows you to obtain a linked list of network interface structures, 
+	// each containing details about a specific network interface, such as its name, address, netmask, 
+	// and other configuration information.
+	if(getifaddrs(&ifaddr) < 0)
 	{
 		printf("Unable to get interface addresses\n");
+		return 0;
 	}
 
 	int first_ipv4 = 1;
+	// loop through all the interfaces
 	for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) 
   	{
+		// if network interface does not have network address
 		if (!ifa->ifa_addr)
 			continue;
+		// if network interface is not up or does not support multicast communication
+		// Multicast allows data to be sent from one sender to multiple receivers, 
+		// enabling efficient group communication.
 		if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_MULTICAST))
 			continue;
+		// if network interface is loopback interface (used for communication within the local host itself)
+		// The loopback interface is a virtual network interface used for communication within the local host 
+		// itself. It is often referred to by the IP address "127.0.0.1". Packets sent to the loopback address are 
+		// looped back and delivered to the receiving application on the same host. The loopback interface is used 
+		// for testing network software and ensuring network services work correctly 
+		// even without an active network connection.
+		//
+		// or nwtwork interface is point-to-point interface. A point-to-point interface is a direct link between 
+		// two network nodes, typically used for point-to-point communication, such as in a VPN (Virtual Private Network) 
+		// or when connecting to another device directly. In a point-to-point interface, each endpoint can directly 
+		// communicate with the other without going through a network switch or router.
 		if ((ifa->ifa_flags & IFF_LOOPBACK) || (ifa->ifa_flags & IFF_POINTOPOINT))
 			continue;
 
+		// if address family is IPv4 
 		if (ifa->ifa_addr->sa_family == AF_INET) 
 		{
 			struct sockaddr_in* saddr = (struct sockaddr_in*)ifa->ifa_addr;
 			
+			// if address is not loopback address
+			// Loopback IP address for IPv4, is 127.0.0.1. The loopback address is used to establish 
+			// communication within the same host (localhost).
 			if (saddr->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) 
 			{
 				int log_addr = 0;
@@ -172,17 +221,22 @@ static int openSockets(int* sockets, int max_sockets, int port)
 				
 				if (num_sockets < max_sockets) 
 				{
+					// open socket for the interface
 					saddr->sin_port = htons(port);
 					int sock = mdns_socket_open_ipv4(saddr);
-					if (sock >= 0) {
+					if (sock >= 0) 
+					{
 						sockets[num_sockets++] = sock;
 						log_addr = 1;
-					} else {
+					} 
+					else 
+					{
 						log_addr = 0;
 					}
 				}
 				if (log_addr) 
 				{
+					// if socket open, print out the interface IP address
 					char buffer[128];
 					mdns_string_t addr = ipv4AddrToString(buffer, sizeof(buffer), saddr,
 					                                            sizeof(struct sockaddr_in));
@@ -197,8 +251,15 @@ static int openSockets(int* sockets, int max_sockets, int port)
 	return num_sockets;
 }
 
-// Send a mDNS query
-static int send_mdns_query(mdns_query_t* query, size_t count) 
+/**
+ * @brief Send mDNS query
+ * 
+ * @param query list of mDNS query
+ * @param count number of mDNS queries on the list
+ * 
+ * @return int 0 if queries send sucessfully, -1 otherwise
+ */
+static int sendQuery(mdns_query_t* query, size_t count) 
 {
 	int sockets[32];
 	int query_id[32];
@@ -209,57 +270,92 @@ static int send_mdns_query(mdns_query_t* query, size_t count)
 		printf("Failed to open any client sockets\n");
 		return -1;
 	}
-	printf("Opened %d socket%s for mDNS query\n", num_sockets, num_sockets ? "s" : "");
+	printf("Opened %d socket%s for mDNS query\n", num_sockets, (num_sockets > 1) ? "s" : "");
 
 	size_t capacity = 2048;
 	char* buffer[capacity];
-	void* user_data = 0;
+	char user_data[256] = {0}; // buffer to pass to the queryCallback
 
 	printf("Sending mDNS query");
 	for (size_t iq = 0; iq < count; ++iq) 
 	{
-		const char* record_name = "PTR";
+		const char* record_name = "A";
 		if (query[iq].type == MDNS_RECORDTYPE_A)
+		{
 			record_name = "A";
+		}
 
 		printf(" : %s %s", query[iq].name, record_name);
 	}
 	printf("\n");
+
+	// loop through open sockets
 	for (int isock = 0; isock < num_sockets; ++isock) 
 	{
-		query_id[isock] =
-		    mdns_multiquery_send(sockets[isock], query, count, buffer, capacity, 0);
+		query_id[isock] = mdns_multiquery_send(sockets[isock], query, count, buffer, capacity, 0);
+
 		if (query_id[isock] < 0)
+		{
 			printf("Failed to send mDNS query: %s\n", strerror(errno));
+		}
 	}
 
-	// This is a simple implementation that loops for 5 seconds or as long as we get replies
+	// Loop for socket TTL seconds or as long as we get replies
 	int res;
 	printf("Reading mDNS query replies\n");
 	int records = 0;
 	do {
 		struct timeval timeout;
-		timeout.tv_sec = 10;
+		timeout.tv_sec = 2; // set TTL for the socket 10s
 		timeout.tv_usec = 0;
 
 		int nfds = 0;
+
+		// This declares a file descriptor set readfs, which is used to specify 
+		// the sockets that will be monitored for readability.
 		fd_set readfs;
-		FD_ZERO(&readfs);
-		for (int isock = 0; isock < num_sockets; ++isock) {
+
+		FD_ZERO(&readfs); // Initializes the file descriptor set readfs to empty.
+
+		// This loop iterates over an array of num_sockets containing socket descriptors,
+		// and adds them to the readfs descriptior so that they can be monitored for the readibility
+		for (int isock = 0; isock < num_sockets; ++isock) 
+		{
 			if (sockets[isock] >= nfds)
+			{
 				nfds = sockets[isock] + 1;
+			}
+			// This adds the current socket descriptor to the file descriptor set readfs. 
+			// i.e. socket will be monitored for readability
 			FD_SET(sockets[isock], &readfs);
 		}
 
+		// This is the select() call, which blocks until there is data available for reading on any 
+		// of the sockets in the readfs set or until the specified timeout of 10 seconds elapses. 
+		// The result of the select() call is stored in the variable res.
 		res = select(nfds, &readfs, 0, 0, &timeout);
-		if (res > 0) {
-			for (int isock = 0; isock < num_sockets; ++isock) {
-				if (FD_ISSET(sockets[isock], &readfs)) {
-					size_t rec = mdns_query_recv(sockets[isock], buffer, capacity, query_callback,
+
+		// if response is received from any of the interfaces (sockets)
+		if (res > 0) 
+		{
+			// loop through the sockets
+			for (int isock = 0; isock < num_sockets; ++isock) 
+			{
+				// if data is available to read (i.e FD is set)
+				if (FD_ISSET(sockets[isock], &readfs)) 
+				{
+					// get response and call the callback
+					size_t rec = mdns_query_recv(sockets[isock], buffer, capacity, queryCallback,
 					                             user_data, query_id[isock]);
 					if (rec > 0)
+					{
 						records += rec;
+					}
+
+					printf("Query answer is: %s\n", user_data);
 				}
+				// This adds the current socket descriptor to the file descriptor set readfs. 
+				// i.e. socket will be monitored for readability again
 				FD_SET(sockets[isock], &readfs);
 			}
 		}
@@ -268,37 +364,26 @@ static int send_mdns_query(mdns_query_t* query, size_t count)
 	printf("Read %d records\n", records);
 
 	for (int isock = 0; isock < num_sockets; ++isock)
+	{
 		mdns_socket_close(sockets[isock]);
-	printf("Closed socket%s\n", num_sockets ? "s" : "");
+	}
+	printf("Closed socket%s\n", (num_sockets > 1) ? "s" : "");
 
 	return 0;
 }
 
-int main(int argc, const char* const* argv) 
+int main() 
 {
-	int mode = 0;
-	const char* service = "Juhans-MacBook-Pro.local";
-	mdns_query_t query[16];
+	const char* hostname = "Juhans-MacBook-Pro.local";
+	mdns_query_t query[1];
 	size_t query_count = 0;
 
-	// Each query is either a service name, or a pair of record type and a service name
-	// For example:
-	//  mdns --query _foo._tcp.local.
-	//  mdns --query SRV myhost._foo._tcp.local.
-	//  mdns --query A myhost._tcp.local. _service._tcp.local.
-	mode = 1;
-
-	query[query_count].name = service;
-	query[query_count].type = MDNS_RECORDTYPE_A;
-	
-
+	query[query_count].name = hostname;			 // hostname that IP address we are quering
+	query[query_count].type = MDNS_RECORDTYPE_A; // query IPv4 address
 	query[query_count].length = strlen(query[query_count].name);
 	++query_count;
 
-
-	int ret;
-	if (mode == 1)
-		ret = send_mdns_query(query, query_count);
+	sendQuery(query, query_count);
 
 	return 0;
 }
