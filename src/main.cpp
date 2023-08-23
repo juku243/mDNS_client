@@ -374,7 +374,7 @@ static int sendQuery(mdns_query_t* query, size_t count)
 
 int main() 
 {
-	const char* hostname = "Juhans-MacBook-Pro.local";
+	const char* hostname = "hostname";
 	mdns_query_t query[1];
 	size_t query_count = 0;
 
