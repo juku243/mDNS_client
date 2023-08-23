@@ -1,2 +1,2 @@
 # mDNS_client
-This is demo with mDNS client. Application makes mDNS query to resolve laptops hostname to the IPv4 address
+This is a demo with mDNS client. The application makes mDNS query to resolve the device hostname to the IPv4 address. In main() specify the hostname that is queried.
